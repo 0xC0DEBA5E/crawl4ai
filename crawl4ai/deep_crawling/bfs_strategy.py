@@ -10,7 +10,7 @@ from .filters import FilterChain
 from .scorers import URLScorer
 from . import DeepCrawlStrategy  
 from ..types import AsyncWebCrawler, CrawlerRunConfig, CrawlResult
-from ..utils import normalize_url_for_deep_crawl, efficient_normalize_url_for_deep_crawl
+from ..utils import normalize_url_for_deep_crawl
 from math import inf as infinity
 
 class BFSDeepCrawlStrategy(DeepCrawlStrategy):
@@ -54,7 +54,7 @@ class BFSDeepCrawlStrategy(DeepCrawlStrategy):
                 raise ValueError("Missing scheme or netloc")
             if parsed.scheme not in ("http", "https"):
                 raise ValueError("Invalid scheme")
-            if "." not in parsed.netloc:
+            if len(parsed.netloc) < 1:
                 raise ValueError("Invalid domain")
         except Exception as e:
             self.logger.warning(f"Invalid URL: {url}, error: {e}")

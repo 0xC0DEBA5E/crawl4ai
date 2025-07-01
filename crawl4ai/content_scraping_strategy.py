@@ -652,7 +652,7 @@ class WebScrapingStrategy(ContentScrapingStrategy):
                         "base_domain": base_domain,
                     }
 
-                    is_external = is_external_url(normalized_href, base_domain)
+                    is_external = is_external_url(normalized_href, url)
 
                     keep_element = True
 

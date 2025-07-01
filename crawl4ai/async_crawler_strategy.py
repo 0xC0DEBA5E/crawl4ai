@@ -502,7 +502,6 @@ class AsyncPlaywrightCrawlerStrategy(AsyncCrawlerStrategy):
         response_headers = {}
         execution_result = None
         status_code = None
-        redirected_url = url 
 
         # Reset downloaded files list for new crawl
         self._downloaded_files = []
@@ -739,7 +738,6 @@ class AsyncPlaywrightCrawlerStrategy(AsyncCrawlerStrategy):
                     response = await page.goto(
                         url, wait_until=config.wait_until, timeout=config.page_timeout
                     )
-                    redirected_url = page.url
                 except Error as e:
                     raise RuntimeError(f"Failed on navigating ACS-GOTO:\n{str(e)}")
 
@@ -1052,7 +1050,7 @@ class AsyncPlaywrightCrawlerStrategy(AsyncCrawlerStrategy):
                 downloaded_files=(
                     self._downloaded_files if self._downloaded_files else None
                 ),
-                redirected_url=redirected_url,
+                redirected_url=page.url or url,
                 # Include captured data if enabled
                 network_requests=captured_requests if config.capture_network_requests else None,
                 console_messages=captured_console if config.capture_console_messages else None,

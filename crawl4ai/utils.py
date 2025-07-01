@@ -1,53 +1,53 @@
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from bs4 import BeautifulSoup, Comment, element, Tag, NavigableString
-import json
+import asyncio
+import cProfile
+import hashlib
 import html
-import lxml
-import re
+import json
 import os
 import platform
-from .prompts import PROMPT_EXTRACT_BLOCKS
-from array import array
-from .html2text import html2text, CustomHTML2Text
-# from .config import *
-from .config import MIN_WORD_THRESHOLD, IMAGE_DESCRIPTION_MIN_WORD_THRESHOLD, IMAGE_SCORE_THRESHOLD, DEFAULT_PROVIDER, PROVIDER_MODELS
-import httpx
-from socket import gaierror
-from pathlib import Path
-from typing import Dict, Any, List, Optional, Callable
-from urllib.parse import urljoin
-import requests
-from requests.exceptions import InvalidSchema
-import xxhash
-import textwrap
-import cProfile
 import pstats
-from functools import wraps
-import asyncio
-from lxml import etree, html as lhtml
+import re
 import sqlite3
-import hashlib
-
-from urllib.robotparser import RobotFileParser
-import aiohttp
-from urllib.parse import urlparse, urlunparse
-from functools import lru_cache
-
-from packaging import version
-from . import __version__
-from typing import Sequence
-
-from itertools import chain
+import textwrap
+import time
+from array import array
 from collections import deque
-from typing import  Generator, Iterable
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import wraps
+from itertools import chain
+from pathlib import Path
+from socket import gaierror
+from typing import Dict, Any, List, Optional, Callable
+from typing import Generator, Iterable
+from typing import Sequence
+from urllib.parse import urljoin, parse_qsl, urlencode
+from urllib.parse import urlparse, urlunparse
+from urllib.robotparser import RobotFileParser
+
+import aiohttp
+import httpx
+import lxml
+import requests
+import xxhash
+from bs4 import BeautifulSoup, Comment, element, Tag, NavigableString
+from lxml import etree, html as lhtml
+from packaging import version
+from requests.exceptions import InvalidSchema
+
+from . import __version__
+# from .config import *
+from .config import MIN_WORD_THRESHOLD, IMAGE_DESCRIPTION_MIN_WORD_THRESHOLD, IMAGE_SCORE_THRESHOLD, DEFAULT_PROVIDER, \
+    PROVIDER_MODELS
+from .html2text import html2text, CustomHTML2Text
+from .prompts import PROMPT_EXTRACT_BLOCKS
+
 
 def chunk_documents(
-    documents: Iterable[str],
-    chunk_token_threshold: int,
-    overlap: int,
-    word_token_rate: float = 0.75,
-    tokenizer: Optional[Callable[[str], List[str]]] = None,
+        documents: Iterable[str],
+        chunk_token_threshold: int,
+        overlap: int,
+        word_token_rate: float = 0.75,
+        tokenizer: Optional[Callable[[str], List[str]]] = None,
 ) -> Generator[str, None, None]:
     """
     Efficiently chunks documents into token-limited sections with overlap between chunks.
@@ -86,13 +86,13 @@ def chunk_documents(
             chunk_tokens = []
             chunk_contrib = []
             chunk_total = 0.0
-            
+
             # Build chunk up to threshold
             while contribution_queue:
                 next_contrib = contribution_queue[0]
                 if chunk_total + next_contrib > chunk_token_threshold:
                     break
-                
+
                 chunk_total += next_contrib
                 chunk_contrib.append(contribution_queue.popleft())
                 chunk_tokens.append(token_queue.popleft())
@@ -115,25 +115,26 @@ def chunk_documents(
             if overlap_idx > 0:
                 overlap_tokens = chunk_tokens[-overlap_idx:]
                 overlap_contrib = chunk_contrib[-overlap_idx:]
-                
+
                 token_queue.extendleft(reversed(overlap_tokens))
                 contribution_queue.extendleft(reversed(overlap_contrib))
                 current_token_count += overlap_total
 
             # Update current token count and yield chunk
             current_token_count -= sum(chunk_contrib)
-            yield " ".join(chunk_tokens[:len(chunk_tokens)-overlap_idx] if overlap_idx else chunk_tokens)
+            yield " ".join(chunk_tokens[:len(chunk_tokens) - overlap_idx] if overlap_idx else chunk_tokens)
 
     # Yield remaining tokens
     if token_queue:
         yield " ".join(token_queue)
 
+
 def merge_chunks(
-    docs: Sequence[str], 
-    target_size: int,
-    overlap: int = 0,
-    word_token_ratio: float = 1.0,
-    splitter: Callable = None
+        docs: Sequence[str],
+        target_size: int,
+        overlap: int = 0,
+        word_token_ratio: float = 1.0,
+        splitter: Callable = None
 ) -> List[str]:
     """Merges documents into chunks of specified token size.
     
@@ -148,7 +149,7 @@ def merge_chunks(
     token_counts = array('I')
     all_tokens: List[List[str]] = []
     total_tokens = 0
-    
+
     for doc in docs:
         tokens = doc.split()
         count = int(len(tokens) * word_token_ratio)
@@ -156,17 +157,17 @@ def merge_chunks(
             token_counts.append(count)
             all_tokens.append(tokens)
             total_tokens += count
-    
+
     if not total_tokens:
         return []
 
     # Pre-allocate chunks
     num_chunks = max(1, (total_tokens + target_size - 1) // target_size)
     chunks: List[List[str]] = [[] for _ in range(num_chunks)]
-    
+
     curr_chunk = 0
     curr_size = 0
-    
+
     # Distribute tokens
     for tokens in chain.from_iterable(all_tokens):
         if curr_size >= target_size and curr_chunk < num_chunks - 1:
@@ -178,7 +179,7 @@ def merge_chunks(
             else:
                 curr_chunk += 1
                 curr_size = 0
-                
+
         chunks[curr_chunk].append(tokens)
         curr_size += 1
 
@@ -240,14 +241,14 @@ class RobotsParser:
         """Get cached rules. Returns (rules, is_fresh)"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
-                "SELECT rules, fetch_time, hash FROM robots_cache WHERE domain = ?", 
+                "SELECT rules, fetch_time, hash FROM robots_cache WHERE domain = ?",
                 (domain,)
             )
             result = cursor.fetchone()
-            
+
             if not result:
                 return None, False
-                
+
             rules, fetch_time, _ = result
             # Check if cache is still fresh based on TTL
             return rules, (time.time() - fetch_time) < self.cache_ttl
@@ -258,11 +259,11 @@ class RobotsParser:
         with sqlite3.connect(self.db_path) as conn:
             # Check if content actually changed
             cursor = conn.execute(
-                "SELECT hash FROM robots_cache WHERE domain = ?", 
+                "SELECT hash FROM robots_cache WHERE domain = ?",
                 (domain,)
             )
             result = cursor.fetchone()
-            
+
             # Only update if hash changed or no previous entry
             if not result or result[0] != hash_val:
                 conn.execute(
@@ -294,14 +295,14 @@ class RobotsParser:
 
         # Fast path - check cache first
         rules, is_fresh = self._get_cached_rules(domain)
-        
+
         # If rules not found or stale, fetch new ones
         if not is_fresh:
             try:
                 # Ensure we use the same scheme as the input URL
                 scheme = parsed.scheme or 'http'
                 robots_url = f"{scheme}://{domain}/robots.txt"
-                
+
                 async with aiohttp.ClientSession() as session:
                     async with session.get(robots_url, timeout=2) as response:
                         if response.status == 200:
@@ -317,13 +318,13 @@ class RobotsParser:
             return True
 
         # Create parser for this check
-        parser = RobotFileParser() 
+        parser = RobotFileParser()
         parser.parse(rules.splitlines())
-        
+
         # If parser can't read rules, allow access
         if not parser.mtime():
             return True
-            
+
         return parser.can_fetch(user_agent, url)
 
     def clear_cache(self):
@@ -336,7 +337,7 @@ class RobotsParser:
         with sqlite3.connect(self.db_path) as conn:
             expire_time = int(time.time()) - self.cache_ttl
             conn.execute("DELETE FROM robots_cache WHERE fetch_time < ?", (expire_time,))
-      
+
 
 class InvalidCSSSelectorError(Exception):
     pass
@@ -344,21 +345,21 @@ class InvalidCSSSelectorError(Exception):
 
 SPLITS = bytearray([
     # Control chars (0-31) + space (32)
-    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
     # Special chars (33-47): ! " # $ % & ' ( ) * + , - . /
-    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
     # Numbers (48-57): Treat as non-splits
-    0,0,0,0,0,0,0,0,0,0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     # More special chars (58-64): : ; < = > ? @
-    1,1,1,1,1,1,1,
+    1, 1, 1, 1, 1, 1, 1,
     # Uppercase (65-90): Keep
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     # More special chars (91-96): [ \ ] ^ _ `
-    1,1,1,1,1,1,
+    1, 1, 1, 1, 1, 1,
     # Lowercase (97-122): Keep
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     # Special chars (123-126): { | } ~
-    1,1,1,1,
+    1, 1, 1, 1,
     # Extended ASCII
     *([1] * 128)
 ])
@@ -369,7 +370,7 @@ HTML_CODE_CHARS = {
     '•', '►', '▼', '©', '®', '™', '→', '⇒', '≈', '≤', '≥',
     # Programming symbols  
     '+=', '-=', '*=', '/=', '=>', '<=>', '!=', '==', '===',
-    '++', '--', '<<', '>>', '&&', '||', '??', '?:', '?.', 
+    '++', '--', '<<', '>>', '&&', '||', '??', '?:', '?.',
     # Common Unicode
     '…', '"', '"', ''', ''', '«', '»', '—', '–',
     # Additional splits
@@ -378,17 +379,18 @@ HTML_CODE_CHARS = {
     '<', '>', ',', '.', '?', '!', ':', ';', '-', '_'
 }
 
+
 def advanced_split(text: str) -> list[str]:
     result = []
     word = array('u')
-    
+
     i = 0
     text_len = len(text)
-    
+
     while i < text_len:
         char = text[i]
         o = ord(char)
-        
+
         # Fast path for ASCII
         if o < 256 and SPLITS[o]:
             if word:
@@ -407,18 +409,19 @@ def advanced_split(text: str) -> list[str]:
         else:
             word.append(char)
         i += 1
-            
+
     if word:
         result.append(word.tounicode())
-        
+
     return result
 
+
 def create_box_message(
-    message: str,
-    type: str = "info",
-    width: int = 120,
-    add_newlines: bool = True,
-    double_line: bool = False,
+        message: str,
+        type: str = "info",
+        width: int = 120,
+        add_newlines: bool = True,
+        double_line: bool = False,
 ) -> str:
     """
     Create a styled message box with colored borders and formatted text.
@@ -480,7 +483,7 @@ def create_box_message(
     box = [
         f"[{border_color}]{tl}{horizontal_line}{tr}[/{border_color}]",
         *[
-            f"[{border_color}]{v_line}[{text_color}] {line:<{width-2}}[/{text_color}][{border_color}]{v_line}[/{border_color}]"
+            f"[{border_color}]{v_line}[{text_color}] {line:<{width - 2}}[/{text_color}][{border_color}]{v_line}[/{border_color}]"
             for line in formatted_lines
         ],
         f"[{border_color}]{bl}{horizontal_line}{br}[/{border_color}]",
@@ -508,7 +511,7 @@ def calculate_semaphore_count():
     """
 
     cpu_count = os.cpu_count()
-    memory_gb = get_system_memory() / (1024**3)  # Convert to GB
+    memory_gb = get_system_memory() / (1024 ** 3)  # Convert to GB
     base_count = max(1, cpu_count // 2)
     memory_based_cap = int(memory_gb / 2)  # Assume 2GB per instance
     return min(base_count, memory_based_cap)
@@ -593,6 +596,7 @@ def get_home_folder():
     os.makedirs(f"{home_folder}/models", exist_ok=True)
     return home_folder
 
+
 async def get_chromium_path(browser_type) -> str:
     """Returns the browser executable path using playwright's browser management.
     
@@ -604,13 +608,13 @@ async def get_chromium_path(browser_type) -> str:
         str: Path to browser executable
     Raises:
         RuntimeError: If browser executable cannot be found
-    """        
+    """
     browser_types = {
         "chromium": "chromium",
         "firefox": "firefox",
         "webkit": "webkit"
     }
-    
+
     browser_type = browser_types.get(browser_type)
     if not browser_type:
         raise RuntimeError(f"Unsupported browser type: {browser_type}")
@@ -626,15 +630,15 @@ async def get_chromium_path(browser_type) -> str:
     async with async_playwright() as p:
         browsers = {
             'chromium': p.chromium,
-            'firefox': p.firefox, 
+            'firefox': p.firefox,
             'webkit': p.webkit
         }
-        
+
         if browser_type.lower() not in browsers:
             raise ValueError(
                 f"Invalid browser type. Must be one of: {', '.join(browsers.keys())}"
             )
-            
+
         # Save the path int the crawl4ai home folder
         home_folder = get_home_folder()
         browser_path = browsers[browser_type.lower()].executable_path
@@ -643,8 +647,9 @@ async def get_chromium_path(browser_type) -> str:
         # Save the path in a text file with browser type name
         with open(os.path.join(home_folder, f"{browser_type.lower()}.path"), "w") as f:
             f.write(browser_path)
-        
+
         return browser_path
+
 
 def beautify_html(escaped_html):
     """
@@ -695,7 +700,7 @@ def split_and_parse_json_objects(json_string):
         elif char == "}":
             depth -= 1
             if depth == 0:
-                segments.append(json_string[start_index : i + 1])
+                segments.append(json_string[start_index: i + 1])
 
     # Try parsing each segment
     parsed_objects = []
@@ -849,7 +854,7 @@ def replace_inline_tags(soup, tags, only_text=False):
 
 
 def get_content_of_website(
-    url, html, word_count_threshold=MIN_WORD_THRESHOLD, css_selector=None, **kwargs
+        url, html, word_count_threshold=MIN_WORD_THRESHOLD, css_selector=None, **kwargs
 ):
     """
     Extract structured content, media, and links from website HTML.
@@ -987,7 +992,7 @@ def get_content_of_website(
                     )
                     word_count = len(child.get_text(strip=True).split())
                     if (
-                        len(child.contents) == 0 and not child.get_text(strip=True)
+                            len(child.contents) == 0 and not child.get_text(strip=True)
                     ) or word_count < word_count_threshold:
                         child.decompose()
             return node
@@ -995,7 +1000,7 @@ def get_content_of_website(
         body = remove_empty_and_low_word_count_elements(body, word_count_threshold)
 
         def remove_small_text_tags(
-            body: Tag, word_count_threshold: int = MIN_WORD_THRESHOLD
+                body: Tag, word_count_threshold: int = MIN_WORD_THRESHOLD
         ):
             # We'll use a list to collect all tags that don't meet the word count requirement
             tags_to_remove = []
@@ -1052,8 +1057,8 @@ def get_content_of_website(
                 if isinstance(child, element.Tag):
                     flatten_nested_elements(child)
                     if (
-                        len(child.contents) == 1
-                        and child.contents[0].name == child.name
+                            len(child.contents) == 1
+                            and child.contents[0].name == child.name
                     ):
                         # print('Flattening:', child.name)
                         child_content = child.contents[0]
@@ -1103,11 +1108,11 @@ def get_content_of_website(
 
 
 def get_content_of_website_optimized(
-    url: str,
-    html: str,
-    word_count_threshold: int = MIN_WORD_THRESHOLD,
-    css_selector: str = None,
-    **kwargs,
+        url: str,
+        html: str,
+        word_count_threshold: int = MIN_WORD_THRESHOLD,
+        css_selector: str = None,
+        **kwargs,
 ) -> Dict[str, Any]:
     if not html:
         return None
@@ -1178,7 +1183,7 @@ def get_content_of_website_optimized(
                     if match:
                         number = int(match.group(1))
                         unit = (
-                            match.group(2) or "px"
+                                match.group(2) or "px"
                         )  # Default unit is 'px' if not specified
                         return number, unit
                 return None, None
@@ -1324,7 +1329,7 @@ def get_content_of_website_optimized(
             # Process children
             for child in list(element.children):
                 if isinstance(child, NavigableString) and not isinstance(
-                    child, Comment
+                        child, Comment
                 ):
                     if len(child.strip()) > 0:
                         keep_element = True
@@ -1361,9 +1366,9 @@ def get_content_of_website_optimized(
         if isinstance(node, NavigableString):
             return node
         if (
-            len(node.contents) == 1
-            and isinstance(node.contents[0], element.Tag)
-            and node.contents[0].name == node.name
+                len(node.contents) == 1
+                and isinstance(node.contents[0], element.Tag)
+                and node.contents[0].name == node.name
         ):
             return flatten_nested_elements(node.contents[0])
         node.contents = [flatten_nested_elements(child) for child in node.contents]
@@ -1578,6 +1583,7 @@ def extract_xml_data_legacy(tags, string):
 
     return data
 
+
 def extract_xml_data(tags, string):
     """
     Extract data for specified XML tags from a string, returning the longest content for each tag.
@@ -1600,7 +1606,7 @@ def extract_xml_data(tags, string):
     for tag in tags:
         pattern = f"<{tag}>(.*?)</{tag}>"
         matches = re.findall(pattern, string, re.DOTALL)
-        
+
         if matches:
             # Find the longest content for this tag
             longest_content = max(matches, key=len).strip()
@@ -1612,12 +1618,12 @@ def extract_xml_data(tags, string):
 
 
 def perform_completion_with_backoff(
-    provider,
-    prompt_with_variables,
-    api_token,
-    json_response=False,
-    base_url=None,
-    **kwargs,
+        provider,
+        prompt_with_variables,
+        api_token,
+        json_response=False,
+        base_url=None,
+        **kwargs,
 ):
     """
     Perform an API completion request with exponential backoff.
@@ -1666,7 +1672,7 @@ def perform_completion_with_backoff(
             # Check if we have exhausted our max attempts
             if attempt < max_attempts - 1:
                 # Calculate the delay and wait
-                delay = base_delay * (2**attempt)  # Exponential backoff formula
+                delay = base_delay * (2 ** attempt)  # Exponential backoff formula
                 print(f"Waiting for {delay} seconds before retrying...")
                 time.sleep(delay)
             else:
@@ -1831,7 +1837,7 @@ def merge_chunks_based_on_token_threshold(chunks, token_threshold):
 
     for chunk in chunks:
         chunk_token_count = (
-            len(chunk.split()) * 1.3
+                len(chunk.split()) * 1.3
         )  # Estimate token count with a factor
         if total_token_so_far + chunk_token_count < token_threshold:
             current_chunk.append(chunk)
@@ -1850,7 +1856,7 @@ def merge_chunks_based_on_token_threshold(chunks, token_threshold):
 
 
 def process_sections(
-    url: str, sections: list, provider: str, api_token: str, base_url=None
+        url: str, sections: list, provider: str, api_token: str, base_url=None
 ) -> list:
     """
     Process sections of HTML content sequentially or in parallel.
@@ -1919,7 +1925,7 @@ def wrap_text(draw, text, font, max_width):
     while words:
         line = ""
         while (
-            words and draw.textbbox((0, 0), line + words[0], font=font)[2] <= max_width
+                words and draw.textbbox((0, 0), line + words[0], font=font)[2] <= max_width
         ):
             line += words.pop(0) + " "
         lines.append(line)
@@ -1992,134 +1998,77 @@ def fast_format_html(html_string):
     return "\n".join(formatted)
 
 
-def normalize_url(href, base_url):
-    """Normalize URLs to ensure consistent format"""
-    from urllib.parse import urljoin, urlparse
+def normalize_url(href, base_url, params_to_remove: Optional[list[str]] = None, remove_fragments = False):
+    """
+    Normalize a URL by resolving it against a base URL and removing specified query parameters.
 
+    Args:
+        href (str): The URL or relative path to normalize.
+        base_url (str): The base URL to resolve relative URLs.
+        params_to_remove (Optional[list[str]]): List of query parameter names to remove from the URL.
+        remove_fragments: bool: Whether to remove the fragment part of the URL.
+
+    Returns:
+        str: The normalized URL as a string.
+    """
     # Parse base URL to get components
     parsed_base = urlparse(base_url)
     if not parsed_base.scheme or not parsed_base.netloc:
         raise ValueError(f"Invalid base URL format: {base_url}")
 
-    # Ensure base_url ends with a trailing slash if it's a directory path
-    if not base_url.endswith('/'):
-        base_url = base_url + '/'
+    # First use urljoin to handle relative URLs
+    absolute_url = urljoin(base_url, href.strip())
 
-    # Use urljoin to handle all cases
-    normalized = urljoin(base_url, href.strip())
-    return normalized
+    # Parse the URL to normalize components
+    parsed = urlparse(absolute_url)
+
+    # Normalize scheme (lowercase)
+    scheme = parsed.scheme.lower()
+
+    # Normalize netloc (lowercase) and remove default ports
+    netloc = parsed.netloc.lower()
+    if ':' in netloc:
+        hostname, port_str = netloc.rsplit(':', 1)
+        try:
+            port = int(port_str)
+            # Remove default ports
+            if (scheme == 'http' and port == 80) or (scheme == 'https' and port == 443):
+                netloc = hostname
+        except ValueError:
+            # If port is not a valid integer, keep the original netloc
+            pass
+
+    # Normalize path (remove dot segments)
+    path = parsed.path
+    # Add single leading slash if path is empty
+    if netloc and not path:
+        path = "/"
+
+    # Sort query parameters alphabetically
+    query = parsed.query
+    if query:
+        # Parse query string into key-value pairs, sort by key (but preserve same-key order), remove unwanted keys and reconstruct
+        params = sorted(parse_qsl(query, keep_blank_values=True), key=lambda x: x[0])
+        if params_to_remove:
+            params = [x for x in params if x[0] not in params_to_remove]
+        sorted_query = urlencode(params, doseq=True)
+    else:
+        sorted_query = query
+
+    # Construct normalized URL - preserving params and fragment
+    return urlunparse((scheme, netloc, path, parsed.params, sorted_query, parsed.fragment if not remove_fragments else ''))
 
 
 def normalize_url_for_deep_crawl(href, base_url):
+    # Remove tracking parameters (example - customize as needed)
+    tracking_params = ['utm_source', 'utm_medium', 'utm_campaign', 'ref', 'fbclid']
     """Normalize URLs to ensure consistent format"""
-    from urllib.parse import urljoin, urlparse, urlunparse, parse_qs, urlencode
 
     # Handle None or empty values
     if not href:
         return None
 
-    # Use urljoin to handle relative URLs
-    full_url = urljoin(base_url, href.strip())
-    
-    # Parse the URL for normalization
-    parsed = urlparse(full_url)
-    
-    # Convert hostname to lowercase
-    netloc = parsed.netloc.lower()
-    
-    # Remove fragment entirely
-    fragment = ''
-    
-    # Normalize query parameters if needed
-    query = parsed.query
-    if query:
-        # Parse query parameters
-        params = parse_qs(query)
-        
-        # Remove tracking parameters (example - customize as needed)
-        tracking_params = ['utm_source', 'utm_medium', 'utm_campaign', 'ref', 'fbclid']
-        for param in tracking_params:
-            if param in params:
-                del params[param]
-                
-        # Rebuild query string, sorted for consistency
-        query = urlencode(params, doseq=True) if params else ''
-    
-    # Build normalized URL
-    normalized = urlunparse((
-        parsed.scheme,
-        netloc,
-        parsed.path.rstrip('/'),  # Normalize trailing slash
-        parsed.params,
-        query,
-        fragment
-    ))
-    
-    return normalized
-
-@lru_cache(maxsize=10000)
-def efficient_normalize_url_for_deep_crawl(href, base_url):
-    """Efficient URL normalization with proper parsing"""
-    from urllib.parse import urljoin
-    
-    if not href:
-        return None
-    
-    # Resolve relative URLs
-    full_url = urljoin(base_url, href.strip())
-    
-    # Use proper URL parsing
-    parsed = urlparse(full_url)
-    
-    # Only perform the most critical normalizations
-    # 1. Lowercase hostname
-    # 2. Remove fragment
-    normalized = urlunparse((
-        parsed.scheme,
-        parsed.netloc.lower(),
-        parsed.path.rstrip('/'),
-        parsed.params,
-        parsed.query,
-        ''  # Remove fragment
-    ))
-    
-    return normalized
-
-
-def normalize_url_tmp(href, base_url):
-    """Normalize URLs to ensure consistent format"""
-    # Extract protocol and domain from base URL
-    try:
-        base_parts = base_url.split("/")
-        protocol = base_parts[0]
-        domain = base_parts[2]
-    except IndexError:
-        raise ValueError(f"Invalid base URL format: {base_url}")
-
-    # Handle special protocols
-    special_protocols = {"mailto:", "tel:", "ftp:", "file:", "data:", "javascript:"}
-    if any(href.lower().startswith(proto) for proto in special_protocols):
-        return href.strip()
-
-    # Handle anchor links
-    if href.startswith("#"):
-        return f"{base_url}{href}"
-
-    # Handle protocol-relative URLs
-    if href.startswith("//"):
-        return f"{protocol}{href}"
-
-    # Handle root-relative URLs
-    if href.startswith("/"):
-        return f"{protocol}//{domain}{href}"
-
-    # Handle relative URLs
-    if not href.startswith(("http://", "https://")):
-        # Remove leading './' if present
-        href = href.lstrip("./")
-        return f"{protocol}//{domain}/{href}"
-
-    return href.strip()
+    return normalize_url(href=href, base_url=base_url, params_to_remove=tracking_params, remove_fragments=True)
 
 
 def get_base_domain(url: str) -> str:
@@ -2139,12 +2088,9 @@ def get_base_domain(url: str) -> str:
     """
     try:
         # Get domain from URL
-        domain = urlparse(url).netloc.lower()
+        domain = urlparse(url).hostname.lower() or ""
         if not domain:
             return ""
-
-        # Remove port if present
-        domain = domain.split(":")[0]
 
         # Remove www
         domain = re.sub(r"^www\.", "", domain)
@@ -2175,34 +2121,35 @@ def get_base_domain(url: str) -> str:
 
 def is_external_url(url: str, base_domain: str) -> bool:
     """
-    Extract the base domain from a given URL, handling common edge cases.
+    Check if a URL is external compared to a base domain.
+
+    This function determines whether the given `url` points to an external site
+    relative to the provided `base_domain`.
 
     How it works:
-    1. Parses the URL to extract the domain.
-    2. Removes the port number and 'www' prefix.
-    3. Handles special domains (e.g., 'co.uk') to extract the correct base.
+    1. Returns True for special schemes (mailto, tel, ftp, file, data, javascript).
+    2. Parses the URL and checks if it is relative (no netloc) — returns False if so.
+    3. Compares the base domain of the URL to the provided `base_domain`.
 
     Args:
-        url (str): The URL to extract the base domain from.
+        url (str): The URL to check.
+        base_domain (str): The base domain to compare against.
 
     Returns:
-        str: The extracted base domain or an empty string if parsing fails.
+        bool: True if the URL is external, False otherwise.
     """
     special = {"mailto:", "tel:", "ftp:", "file:", "data:", "javascript:"}
     if any(url.lower().startswith(p) for p in special):
         return True
 
     try:
-        parsed = urlparse(url)
-        if not parsed.netloc:  # Relative URL
+        parsed_url = urlparse(url)
+
+        # If relative URL, it's not external
+        if not parsed_url.netloc:
             return False
 
-        # Strip 'www.' from both domains for comparison
-        url_domain = parsed.netloc.lower().replace("www.", "")
-        base = base_domain.lower().replace("www.", "")
-
-        # Check if URL domain ends with base domain
-        return not url_domain.endswith(base)
+        return get_base_domain(url) != base_domain
     except Exception:
         return False
 
@@ -2428,11 +2375,11 @@ def clean_tokens(tokens: list[str]) -> list[str]:
         token
         for token in tokens
         if len(token) > 2
-        and token not in noise
-        and token not in STOP_WORDS
-        and not token.startswith("↑")
-        and not token.startswith("▲")
-        and not token.startswith("⬆")
+           and token not in noise
+           and token not in STOP_WORDS
+           and not token.startswith("↑")
+           and not token.startswith("▲")
+           and not token.startswith("⬆")
     ]
 
 
@@ -2585,28 +2532,31 @@ def get_error_context(exc_info, context_lines: int = 5):
         "code_context": code_context,
     }
 
+
 def truncate(value, threshold):
     if len(value) > threshold:
         return value[:threshold] + '...'  # Add ellipsis to indicate truncation
     return value
 
+
 def optimize_html(html_str, threshold=200):
     root = lxml.html.fromstring(html_str)
-    
+
     for _element in root.iter():
         # Process attributes
         for attr in list(_element.attrib):
             _element.attrib[attr] = truncate(_element.attrib[attr], threshold)
-        
+
         # Process text content
         if _element.text and len(_element.text) > threshold:
             _element.text = truncate(_element.text, threshold)
-            
+
         # Process tail text
         if _element.tail and len(_element.tail) > threshold:
             _element.tail = truncate(_element.tail, threshold)
-    
+
     return lxml.html.tostring(root, encoding='unicode', pretty_print=False)
+
 
 class HeadPeekr:
     @staticmethod
@@ -2619,19 +2569,19 @@ class HeadPeekr:
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.get(url, headers=headers, follow_redirects=True)
-                
+
                 # Handle redirects explicitly by using the final URL
                 if response.url != url:
                     url = str(response.url)
                     response = await client.get(url, headers=headers)
-                
+
                 content = b""
                 async for chunk in response.aiter_bytes():
                     content += chunk
                     if b"</head>" in content:
                         break  # Stop after detecting </head>
                 return content.split(b"</head>")[0] + b"</head>"
-        except (httpx.HTTPError, gaierror) :
+        except (httpx.HTTPError, gaierror):
             return None
 
     @staticmethod
@@ -2644,26 +2594,27 @@ class HeadPeekr:
     @staticmethod
     def extract_meta_tags(head_content: str):
         meta_tags = {}
-        
+
         # Find all meta tags
         meta_pattern = r'<meta[^>]+>'
         for meta_tag in re.finditer(meta_pattern, head_content):
             tag = meta_tag.group(0)
-            
+
             # Extract name/property and content
             name_match = re.search(r'name=["\'](.*?)["\']', tag)
             property_match = re.search(r'property=["\'](.*?)["\']', tag)
             content_match = re.search(r'content=["\'](.*?)["\']', tag)
-            
+
             if content_match and (name_match or property_match):
                 key = name_match.group(1) if name_match else property_match.group(1)
                 meta_tags[key] = content_match.group(1)
-                
+
         return meta_tags
 
     def get_title(head_content: str):
         title_match = re.search(r'<title>(.*?)</title>', head_content, re.IGNORECASE | re.DOTALL)
         return title_match.group(1) if title_match else None
+
 
 def preprocess_html_for_schema(html_content, text_threshold=100, attr_value_threshold=200, max_size=100000):
     """
@@ -2682,32 +2633,32 @@ def preprocess_html_for_schema(html_content, text_threshold=100, attr_value_thre
         # Parse HTML with error recovery
         parser = etree.HTMLParser(remove_comments=True, remove_blank_text=True)
         tree = lhtml.fromstring(html_content, parser=parser)
-        
+
         # 1. Remove HEAD section (keep only BODY)
         head_elements = tree.xpath('//head')
         for head in head_elements:
             if head.getparent() is not None:
                 head.getparent().remove(head)
-        
+
         # 2. Define tags to remove completely
         tags_to_remove = [
             'script', 'style', 'noscript', 'iframe', 'canvas', 'svg',
             'video', 'audio', 'source', 'track', 'map', 'area'
         ]
-        
+
         # Remove unwanted elements
         for tag in tags_to_remove:
             elements = tree.xpath(f'//{tag}')
             for element in elements:
                 if element.getparent() is not None:
                     element.getparent().remove(element)
-        
+
         # 3. Process remaining elements to clean attributes and truncate text
         for element in tree.iter():
             # Skip if we're at the root level
             if element.getparent() is None:
                 continue
-                
+
             # Clean non-essential attributes but preserve structural ones
             # attribs_to_keep = {'id', 'class', 'name', 'href', 'src', 'type', 'value', 'data-'}
 
@@ -2718,7 +2669,7 @@ def preprocess_html_for_schema(html_content, text_threshold=100, attr_value_thre
 
             # This means, I don't care, if an attribute is too long, truncate it, go and find a better css selector to build a schema
             attributes_hates_truncate = []
-            
+
             # Process each attribute
             for attrib in list(element.attrib.keys()):
                 # Keep if it's essential or starts with data-
@@ -2727,18 +2678,18 @@ def preprocess_html_for_schema(html_content, text_threshold=100, attr_value_thre
                 # Truncate long attribute values except for selectors
                 elif attrib not in attributes_hates_truncate and len(element.attrib[attrib]) > attr_value_threshold:
                     element.attrib[attrib] = element.attrib[attrib][:attr_value_threshold] + '...'
-            
+
             # Truncate text content if it's too long
             if element.text and len(element.text.strip()) > text_threshold:
                 element.text = element.text.strip()[:text_threshold] + '...'
-                
+
             # Also truncate tail text if present
             if element.tail and len(element.tail.strip()) > text_threshold:
                 element.tail = element.tail.strip()[:text_threshold] + '...'
 
         # 4. Detect duplicates and drop them in a single pass
         seen: dict[tuple, None] = {}
-        for el in list(tree.xpath('//*[@class]')):          # snapshot once, XPath is fast
+        for el in list(tree.xpath('//*[@class]')):  # snapshot once, XPath is fast
             parent = el.getparent()
             if parent is None:
                 continue
@@ -2748,17 +2699,17 @@ def preprocess_html_for_schema(html_content, text_threshold=100, attr_value_thre
                 continue
 
             # ── build signature ───────────────────────────────────────────
-            h = xxhash.xxh64()                              # stream, no big join()
+            h = xxhash.xxh64()  # stream, no big join()
             for txt in el.itertext():
                 h.update(txt)
-            sig = (el.tag, cls, h.intdigest())             # tuple cheaper & hashable
+            sig = (el.tag, cls, h.intdigest())  # tuple cheaper & hashable
 
             # ── first seen? keep – else drop ─────────────
             if sig in seen and parent is not None:
-                parent.remove(el)                           # duplicate
+                parent.remove(el)  # duplicate
             else:
                 seen[sig] = None
-        
+
         # # 4. Find repeated patterns and keep only a few examples
         # # This is a simplistic approach - more sophisticated pattern detection could be implemented
         # pattern_elements = {}
@@ -2766,7 +2717,7 @@ def preprocess_html_for_schema(html_content, text_threshold=100, attr_value_thre
         #     parent = element.getparent()
         #     if parent is None:
         #         continue
-                
+
         #     # Create a signature based on tag and classes
         #     classes = element.get('class', '')
         #     if not classes:
@@ -2774,12 +2725,12 @@ def preprocess_html_for_schema(html_content, text_threshold=100, attr_value_thre
         #     innert_text = ''.join(element.xpath('.//text()'))
         #     innert_text_hash = xxhash.xxh64(innert_text.encode()).hexdigest()
         #     signature = f"{element.tag}.{classes}.{innert_text_hash}"
-            
+
         #     if signature in pattern_elements:
         #         pattern_elements[signature].append(element)
         #     else:
         #         pattern_elements[signature] = [element]
-        
+
         # # Keep only first examples of each repeating pattern
         # for signature, elements in pattern_elements.items():
         #     if len(elements) > 1:
@@ -2788,7 +2739,6 @@ def preprocess_html_for_schema(html_content, text_threshold=100, attr_value_thre
         #             if element.getparent() is not None:
         #                 element.getparent().remove(element)
 
-
         # # Keep only 3 examples of each repeating pattern
         # for signature, elements in pattern_elements.items():
         #     if len(elements) > 3:
@@ -2796,17 +2746,16 @@ def preprocess_html_for_schema(html_content, text_threshold=100, attr_value_thre
         #         for element in elements[2:-1]:
         #             if element.getparent() is not None:
         #                 element.getparent().remove(element)
-        
+
         # 5. Convert back to string
         result = etree.tostring(tree, encoding='unicode', method='html')
-        
+
         # If still over the size limit, apply more aggressive truncation
         if len(result) > max_size:
             return result[:max_size] + "..."
-            
+
         return result
-    
+
     except Exception as e:
         # Fallback for parsing errors
         return html_content[:max_size] if len(html_content) > max_size else html_content
-    
