@@ -644,3 +644,63 @@ class SemaphoreDispatcher(BaseDispatcher):
         finally:
             if self.monitor:
                 self.monitor.stop()
+
+    async def run_urls_stream(
+        self,
+        crawler: AsyncWebCrawler,
+        urls: List[str],
+        config: CrawlerRunConfig,
+    ) -> AsyncGenerator[CrawlerTaskResult, None]:
+        self.crawler = crawler
+
+        if self.monitor:
+            self.monitor.start()
+
+        semaphore = asyncio.Semaphore(self.semaphore_count)
+        url_iter = iter(urls)
+        active_tasks: set[asyncio.Task] = set()
+
+        def create_crawl_task(url: str) -> asyncio.Task:
+            task_id = str(uuid.uuid4())
+            if self.monitor:
+                self.monitor.add_task(task_id, url)
+            return asyncio.create_task(
+                self.crawl_url(url, config, task_id, semaphore)
+            )
+
+        try:
+            while len(active_tasks) < self.max_session_permit:
+                try:
+                    url = next(url_iter)
+                except StopIteration:
+                    break
+                active_tasks.add(create_crawl_task(url))
+
+            while active_tasks:
+                done, pending = await asyncio.wait(
+                    active_tasks,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                active_tasks = set(pending)
+
+                for completed_task in done:
+                    result = await completed_task
+                    yield result
+
+                while len(active_tasks) < self.max_session_permit:
+                    try:
+                        url = next(url_iter)
+                    except StopIteration:
+                        break
+                    active_tasks.add(create_crawl_task(url))
+
+        finally:
+            for task in active_tasks:
+                task.cancel()
+
+            if active_tasks:
+                await asyncio.gather(*active_tasks, return_exceptions=True)
+
+            if self.monitor:
+                self.monitor.stop()
